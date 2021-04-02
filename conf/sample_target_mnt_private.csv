@@ -1,0 +1,4 @@
+target_name,target_url,frequency
+Microsoft,https://www.microsoft.com,60
+Twitter,https://twitter.com,120
+PrivateWeb,http://10.0.0.4/index.nginx-debian.html,30

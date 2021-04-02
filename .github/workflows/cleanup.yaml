@@ -1,0 +1,51 @@
+name: "Cleanup"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    name: "Cleanup"
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: "Checkout"
+        uses: actions/checkout@v2
+
+      - name: "Prepare"
+        id: prep
+        run: |
+          git fetch --prune --unshallow
+          TAG=$(git tag --sort -version:refname | head -n1)
+          REPO_NAME=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')
+          echo ::set-output name=tag::${TAG}
+          echo ::set-output name=repo_name::${REPO_NAME}
+          echo ::set-output name=container_instances_name::ci-${REPO_NAME}
+
+      - name: "Azure Login"
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: "Disable Alerts"
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.21.0
+          inlineScript: >
+            az monitor metrics alert list
+            -g ${{ secrets.RESOURCE_GROUP }}
+            --query "[].id"
+            -o tsv
+            |
+            az monitor metrics alert update
+            --enabled false
+            --ids @-
+
+      - name: "Cleanup Container"
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.21.0
+          inlineScript: |
+            exist=$(az container list -g ${{ secrets.RESOURCE_GROUP }} --query "[?name=='${{ steps.prep.outputs.container_instances_name }}']")
+            if [[ -n $exist ]]; then az container delete -g ${{ secrets.RESOURCE_GROUP }} -n ${{ steps.prep.outputs.container_instances_name }} --yes; fi

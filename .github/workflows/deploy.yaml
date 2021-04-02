@@ -1,0 +1,82 @@
+name: "Deployment"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: "Deploy"
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: "Checkout"
+        uses: actions/checkout@v2
+
+      - name: "Prepare"
+        id: prep
+        run: |
+          git fetch --prune --unshallow
+          TAG=$(git tag --sort -version:refname | head -n1)
+          REPO_NAME=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')
+          echo ::set-output name=tag::${TAG}
+          echo ::set-output name=repo_name::${REPO_NAME}
+          echo ::set-output name=container_instances_name::ci-${REPO_NAME}
+
+      - name: "Azure Login"
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: "Contaner Registry Login"
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: "Cleanup Container"
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.21.0
+          inlineScript: |
+            exist=$(az container list -g ${{ secrets.RESOURCE_GROUP }} --query "[?name=='${{ steps.prep.outputs.container_instances_name }}']")
+            if [[ -n $exist ]]; then az container delete -g ${{ secrets.RESOURCE_GROUP }} -n ${{ steps.prep.outputs.container_instances_name }} --yes; fi
+
+      - name: "Deploy Container"
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.21.0
+          inlineScript: >
+            az container create
+            -g ${{ secrets.RESOURCE_GROUP }}
+            -n ${{ steps.prep.outputs.container_instances_name }}
+            --cpu 1
+            --memory 1
+            --restart-policy Always
+            --image ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ steps.prep.outputs.repo_name }}:${{ steps.prep.outputs.tag }}
+            --registry-login-server ${{ secrets.REGISTRY_LOGIN_SERVER }}
+            --registry-username ${{ secrets.REGISTRY_USERNAME }}
+            --registry-password ${{ secrets.REGISTRY_PASSWORD }}
+            --network-profile ${{ secrets.PROBE_NW_PROFILE }}
+            --gitrepo-url "https://gituser:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}"
+            --gitrepo-mount-path /mnt/az-aci-healthprobe-go
+            --environment-variables
+            "PROBE_LOCATION"="${{ secrets.PROBE_LOCATION}}"
+            "PROBE_INSTRUMENTATION_KEY"="${{ secrets.PROBE_INSTRUMENTATION_KEY}}"
+            "PROBE_TARGET_LIST_FILE"="/mnt/az-aci-healthprobe-go/conf/sample_target_mnt.csv"
+            "PROBE_LOG_LEVEL"="DEBUG"
+
+      - name: "Enable Alerts"
+        uses: azure/CLI@v1
+        with:
+          azcliversion: 2.21.0
+          inlineScript: >
+            az monitor metrics alert list
+            -g ${{ secrets.RESOURCE_GROUP }}
+            --query "[].id"
+            -o tsv
+            |
+            az monitor metrics alert update
+            --enabled true
+            --ids @-
